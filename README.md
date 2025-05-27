@@ -78,6 +78,46 @@ AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
 JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
 WHERE NOT blocked_locks.granted;
 ```
+--- Pg_dump by Python ---
+```
+
+import psycopg2
+import subprocess
+import os
+
+host='host_name'
+port='port'
+passwd='password'
+user='username'
+backup_dir="/path/to/backup"
+backup_format="plain" # custome,plain,tar,directory 
+
+db_list =[db1, db2,db3, db4,b5]
+
+
+for db in db_list:
+	timestamp = datetime.datetime.now().strtime("%Y%m%d_%H%M%S")
+	backup_file= f"{db}_backup_{timestamp}.backup"
+	backup_path = os.path.join(backup_dir,backu_file)
+
+	# pg_dump command
+	
+	pg_dump_cmd = ["pg_dump","-U",user,"-h",host,"-p",port,"-F",backup_format,"-f",backup_path,db ]
+	
+	#set environment variable for password (optional)
+
+	os.environ['PGPASSWORD']= "passwd"
+	
+
+	try:
+
+	   print(f"staring backup of '{db}' to '{backup_path}'")
+	   subprocess.run()pg_dump_cmd,check=True)
+	   print("backup completed successfully.")
+       except exception as error:
+	    print("Backup Failed {db}!")
+
+```
 ----- Vacuum Verbose By Python Scrip -----
 ```
 import psycopg2

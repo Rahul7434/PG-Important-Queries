@@ -2,27 +2,41 @@
 
 --------------- Check Dead Tuples  -----------------------------------
 ```
-select schemaname, relname AS table_name, n_dead_tup AS dead_tuples
-from pg_stat_user_tables ORDER BY n_dead_tup DESC;
+SELECT relname, n_dead_tup, n_live_tup 
+FROM pg_stat_all_tables 
+WHERE n_dead_tup > (n_live_tup * 0.2)
+ORDER BY n_dead_tup DESC;
+
+
+
+-------- Long Running Query ------
+
+SELECT datname, pid, state, query, age(clock_timestamp(), query_start) AS age
+FROM pg_stat_activity
+WHERE state <> 'idle'
+AND query NOT LIKE '% FROM pg_stat_activity %'
+ORDER BY age;
+
+---Monitor Vacuum & REINDEX Progress---
+
+SELECT pid, query, state, wait_event
+FROM pg_stat_activity
+WHERE query LIKE '%VACUUM%' OR query LIKE '%REINDEX%';
+
+------------ Monitor Last autovacuum |vacuum and analyze |autoanalyzer status ----------------
+
+SELECT schemaname, relname, last_autovacuum, last_autoanalyze,last_analyze,last_vacuum 
+FROM pg_stat_all_tables;
+
+-----------Check Current use lock------------------------
+
+SELECT * FROM pg_locks WHERE NOT granted;
+
 ```
 
 
--------------Script Remove Files from foder windows os----------------------------------
-```
-$folder = "C:\Users\FMGS10009RJ26\Documents\ds_log_ds-000006"
-$keepDate = "2025_05_14"
 
-Get-ChildItem -Path $folder -Filter "CoreLog_*" | ForEach-Object {
-    if ($_ -match "CoreLog_.*?_(\d{4}_\d{2}_\d{2})") {  # Adjusted regex pattern to match YYYY_MM_DD
-        $fileDate = $matches[1]  # Extract matched date portion
 
-        if ($fileDate -ne $keepDate) {  # Ensure files with 2025_04_30 are NOT deleted
-            Write-Host "Deleting file: $($_.FullName)"
-            Remove-Item $_.FullName
-        }
-    }
-}
-```
 -------------------------------  Blocking ----------------------------------------
 ```
 SELECT blocked.pid AS blocked_pid, blocker.pid AS blocking_pid
@@ -64,10 +78,144 @@ AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
 JOIN pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
 WHERE NOT blocked_locks.granted;
 ```
----------------------------------Check Current use lock----------------------------
+----- Vacuum Verbose By Python Scrip -----
+```
+import psycopg2
+host = "host_name"
+port = "port"
+user = "user_name"
+pass = "password"
+DB_list = ["db1","db2","db3","db4","db5"]
+for db in DB_list:
+     try:
+	conn = psycopg2.connect(host=host,port=port,user=user, pass=pass,db=db)
+	conn.autocommit()
+	cursor = conn.cursor()
+	cursor.execute("VACUUM VERBOSE;")
+	print(f"vauum is completed successfully on {Db}")
+	cursor.close()
+	conn.close()
+	Print("Database Connection Closed {db} ")
+    except exception as error:
+	print(f"Dtaabase Connection Failed: {error}")
+print("Vacuum Completed Successfully on all :- {DB_list}")
+
+```
+---------------------------------REINDEX on index which has bloating wastebytes >0 by python script ----------------------------
+```
+import psycopg2
+
+# The SQL query to analyze index bloat
+QUERY = """
+SELECT current_database(),
+       schemaname,
+       tablename,
+       ROUND((CASE WHEN otta=0 THEN 0.0 ELSE sml.relpages::float/otta END)::numeric, 1) AS tbloat,
+       CASE WHEN relpages < otta THEN 0 ELSE bs*(sml.relpages-otta)::BIGINT END AS wastedbytes,
+       iname,
+       ROUND((CASE WHEN iotta=0 OR ipages=0 THEN 0.0 ELSE ipages::float/iotta END)::numeric, 1) AS ibloat,
+       CASE WHEN ipages < iotta THEN 0 ELSE bs*(ipages-iotta) END AS wastedibytes
+FROM (
+    SELECT schemaname, tablename, cc.reltuples, cc.relpages, bs,
+           CEIL((cc.reltuples * ((datahdr + ma - (CASE WHEN datahdr % ma = 0 THEN ma ELSE datahdr % ma END)) + nullhdr2 + 4)) / (bs - 20::float)) AS otta,
+           COALESCE(c2.relname, '?') AS iname,
+           COALESCE(c2.reltuples, 0) AS ituples,
+           COALESCE(c2.relpages, 0) AS ipages,
+           COALESCE(CEIL((c2.reltuples * (datahdr - 12)) / (bs - 20::float)), 0) AS iotta
+    FROM (
+        SELECT ma, bs, schemaname, tablename,
+               (datawidth + (hdr + ma - (CASE WHEN hdr % ma = 0 THEN ma ELSE hdr % ma END)))::numeric AS datahdr,
+               (maxfracsum * (nullhdr + ma - (CASE WHEN nullhdr % ma = 0 THEN ma ELSE nullhdr % ma END))) AS nullhdr2
+        FROM (
+            SELECT schemaname, tablename, hdr, ma, bs,
+                   SUM((1 - null_frac) * avg_width) AS datawidth,
+                   MAX(null_frac) AS maxfracsum,
+                   hdr + (SELECT 1 + count(*) / 8
+                          FROM pg_stats s2
+                          WHERE null_frac <> 0
+                          AND s2.schemaname = s.schemaname
+                          AND s2.tablename = s.tablename) AS nullhdr
+            FROM pg_stats s,
+                 (SELECT (SELECT current_setting('block_size')::numeric) AS bs,
+                         CASE WHEN substring(v, 12, 3) IN ('8.0', '8.1', '8.2') THEN 27 ELSE 23 END AS hdr,
+                         CASE WHEN v ~ 'mingw32' THEN 8 ELSE 4 END AS ma
+                  FROM (SELECT version() AS v) AS foo) AS constants
+            GROUP BY 1, 2, 3, 4, 5
+        ) AS foo
+    ) AS rs
+    JOIN pg_class cc ON cc.relname = rs.tablename
+    JOIN pg_namespace nn ON cc.relnamespace = nn.oid
+                          AND nn.nspname = rs.schemaname
+                          AND nn.nspname <> 'information_schema'
+    LEFT JOIN pg_index i ON indrelid = cc.oid
+    LEFT JOIN pg_class c2 ON c2.oid = i.indexrelid
+) AS sml
+ORDER BY wastedbytes DESC;
+"""
+
+# Database connection details
+DB_HOST = "bpay-pgflexi-pr-dam.postgres.database.azure.com"
+DB_PORT = "5432"
+DB_NAME = "dsaudit"
+DB_USER = "psqladmin"
+DB_PASSWORD = "P@ssw0rd@5432@2023"
+
+# List to store bloated indexes
+index_list = []
+
+# Connect to PostgreSQL server
+try:
+    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+    conn.autocommit = True  # Ensure queries execute immediately
+    cursor = conn.cursor()
+
+    # Execute query to fetch index bloat details
+    cursor.execute(QUERY)
+    data = cursor.fetchall()
+
+    # Extract indexes with wasted space
+    for row in data:
+        if row[7] > 0:
+            index_list.append(row[5])
+
+    # Set PostgreSQL parameters for optimized reindexing
+    cursor.execute("SET max_parallel_workers_per_gather = 8;")
+    cursor.execute("SET maintenance_work_mem = '20GB';")
+    print("Database parameters set: max_parallel_workers_per_gather = 8, maintenance_work_mem = 20GB")
+
+    # Loop through indexes and reindex them concurrently
+    for index in index_list:
+        try:
+            query = f"REINDEX INDEX CONCURRENTLY {index};"
+            print(f"Reindexing: {index}")
+            cursor.execute(query)
+            print(f"Successfully reindexed: {index}")
+        except Exception as e:
+            print(f"Error reindexing {index}: {e}")
+
+    # Close the database connection
+    cursor.close()
+    conn.close()
+    print("Database connection closed.")
+
+except Exception as db_error:
+    print(f"Database connection failed: {db_error}")
 ```
 
-SELECT * FROM pg_locks WHERE NOT granted;
+-------------Script Remove Files from foder windows os----------------------------------
 ```
-------------------------------------------------------------------------------------------
+$folder = "C:\Users\FMGS10009RJ26\Documents\ds_log_ds-000006"
+$keepDate = "2025_05_14"
+
+Get-ChildItem -Path $folder -Filter "CoreLog_*" | ForEach-Object {
+    if ($_ -match "CoreLog_.*?_(\d{4}_\d{2}_\d{2})") {  # Adjusted regex pattern to match YYYY_MM_DD
+        $fileDate = $matches[1]  # Extract matched date portion
+
+        if ($fileDate -ne $keepDate) {  # Ensure files with 2025_04_30 are NOT deleted
+            Write-Host "Deleting file: $($_.FullName)"
+            Remove-Item $_.FullName
+        }
+    }
+}
+```
 

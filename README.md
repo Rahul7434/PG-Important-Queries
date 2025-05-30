@@ -258,4 +258,38 @@ Get-ChildItem -Path $folder -Filter "CoreLog_*" | ForEach-Object {
     }
 }
 ```
+------Monitor TPS And CPU by Python Script -----
+```
+import psycopg2
+import time
+
+# PostgreSQL connection details
+conn = psycopg2.connect(
+    dbname="your_database",
+    user="your_user",
+    password="your_password",
+    host="your_host",
+    port="your_port"
+)
+cursor = conn.cursor()
+
+prev_txns = None  # Store previous transaction count
+
+while True:
+    # Query PostgreSQL for transaction count
+    cursor.execute("""
+        SELECT xact_commit + xact_rollback AS total_txns
+        FROM pg_stat_database
+        WHERE datname = 'your_database';
+    """)
+    current_txns = cursor.fetchone()[0]
+
+    if prev_txns is not None:
+        tps = current_txns - prev_txns  # Calculate TPS
+        print(f"Transactions Per Second: {tps}")
+
+    prev_txns = current_txns  # Update previous count
+    time.sleep(1)  # Run every second
+```
+
 
